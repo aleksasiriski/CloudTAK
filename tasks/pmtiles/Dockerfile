@@ -1,8 +1,22 @@
-FROM public.ecr.aws/lambda/nodejs:24
+FROM alpine:3.22
 
-COPY . ${LAMBDA_TASK_ROOT}/
+EXPOSE 5002
+
+ENV HOME=/home/etl
+WORKDIR $HOME
+
+RUN apk add git nodejs-current npm
+
+WORKDIR $HOME/tiles
+
+ADD package.json ./
+ADD package-lock.json ./
 
 RUN npm install
-RUN npm run build
 
-CMD ["dist/index.handler"]
+COPY ./ $HOME/tiles
+
+RUN npm run lint \
+    && npm run build
+
+CMD ["npm", "run", "prod"]

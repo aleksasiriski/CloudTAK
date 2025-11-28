@@ -1,101 +1,208 @@
 services:
-    api:
-        platform: linux/amd64
-        build:
-          context: ./api/
-          dockerfile: Dockerfile
-        restart: 'always'
-        depends_on:
-            - postgis
-            - media
-            - store
-        ports:
-            - "5000:5000"
-        environment:
-            - CLOUDTAK_Mode=${CLOUDTAK_Mode}
-            - CLOUDTAK_Config_media_url=${CLOUDTAK_Config_media_url}
-            - SigningSecret=${SigningSecret}
-            - ASSET_BUCKET=${ASSET_BUCKET}
-            - AWS_S3_Endpoint=${AWS_S3_Endpoint}
-            - AWS_S3_AccessKeyId=${AWS_S3_AccessKeyId}
-            - AWS_S3_SecretAccessKey=${AWS_S3_SecretAccessKey}
-            - POSTGRES=${POSTGRES}
-            - API_URL=${API_URL}
-            - PMTILES_URL=${PMTILES_URL}
+  # Reverse proxy
+  crowdsec:
+    image: docker.io/crowdsecurity/crowdsec:v1.6.11
+    environment:
+      COLLECTIONS: "crowdsecurity/traefik crowdsecurity/appsec-virtual-patching crowdsecurity/appsec-generic-rules"
+      CUSTOM_HOSTNAME: "crowdsec"
+      BOUNCER_KEY_TRAEFIK: ${BOUNCER_KEY_TRAEFIK}
+    volumes:
+      - type: volume
+        source: traefik-logs-vol
+        target: /var/log/traefik
+        volume:
+          nocopy: false
+      - type: volume
+        source: crowdsec-db-vol
+        target: /var/lib/crowdsec/data
+        volume:
+          nocopy: false
+      - type: volume
+        source: crowdsec-conf-vol
+        target: /etc/crowdsec
+        volume:
+          nocopy: false
+      - type: bind
+        source: ./acquis.yaml
+        target: /etc/crowdsec/acquis.yaml
+        read_only: true
+    restart: unless-stopped
 
-    tiles:
-        platform: linux/amd64
-        build:
-          context: ./tasks/pmtiles/
-          dockerfile: Dockerfile.compose
-        restart: 'always'
-        ports:
-            - "5002:5002"
-        environment:
-            - PMTILES_URL=${PMTILES_URL}
-            - SigningSecret=${SigningSecret}
-            - ASSET_BUCKET=${ASSET_BUCKET}
-            - AWS_S3_Endpoint=${AWS_S3_Endpoint}
-            - AWS_S3_AccessKeyId=${AWS_S3_AccessKeyId}
-            - AWS_S3_SecretAccessKey=${AWS_S3_SecretAccessKey}
+  traefik:
+    depends_on:
+      - crowdsec
+    image: docker.io/library/traefik:v3.5.3
+    command:
+      - "--accesslog"
+      - "--accesslog.filepath=/var/log/traefik/access.log"
+      - "--providers.docker=true"
+      - "--providers.docker.exposedbydefault=false"
+      - "--entrypoints.web.address=:80"
+      - "--entrypoints.web.http.redirections.entrypoint.to=websecure"
+      - "--entrypoints.web.http.redirections.entrypoint.scheme=https"
+      - "--entrypoints.websecure.address=:443"
+      - "--entrypoints.websecure.http3"
+      - "--certificatesresolvers.letsencrypt.acme.email=${ACME_EMAIL}"
+      - "--certificatesresolvers.letsencrypt.acme.storage=acme/acme.json"
+      - "--certificatesresolvers.letsencrypt.acme.httpchallenge.entrypoint=web"
+      - "--experimental.plugins.bouncer.modulename=github.com/maxlerebourg/crowdsec-bouncer-traefik-plugin"
+      - "--experimental.plugins.bouncer.version=v1.4.5"
+    ports:
+      - "80:80/tcp"
+      - "443:443/tcp"
+      - "443:443/udp"
+    volumes:
+      - type: volume
+        source: traefik-logs-vol
+        target: /var/log/traefik
+        volume:
+          nocopy: false
+      - type: volume
+        source: traefik-acme-vol
+        target: /acme
+        volume:
+          nocopy: false
+      - type: bind
+        source: /var/run/docker.sock
+        target: /var/run/docker.sock
+        read_only: true
+    restart: unless-stopped
 
-    events:
-        platform: linux/amd64
-        build:
-          context: ./tasks/events/
-          dockerfile: Dockerfile
-        restart: 'always'
-        depends_on:
-            - api
-            - store
-        ports:
-            - "5003:5003"
-        environment:
-            - CLOUDTAK_Mode=${CLOUDTAK_Mode}
-            - API_URL=${API_URL}
-            - SigningSecret=${SigningSecret}
-            - ASSET_BUCKET=${ASSET_BUCKET}
-            - AWS_S3_Endpoint=${AWS_S3_Endpoint}
-            - AWS_S3_AccessKeyId=${AWS_S3_AccessKeyId}
-            - AWS_S3_SecretAccessKey=${AWS_S3_SecretAccessKey}
+  # CloudTAK
 
-    media:
-        image: ghcr.io/dfpc-coe/media-infra:v8.0.1
-        restart: 'always'
-        environment:
-            - API_URL=${API_URL}
-            - SigningSecret=${SigningSecret}
-            - CLOUDTAK_Config_media_url=${CLOUDTAK_Config_media_url}
-        ports:
-            - "${MEDIA_PORT_API:-9997}:9997"
-            - "${MEDIA_PORT_RTSP:-8554}:8554"
-            - "${MEDIA_PORT_RTMP:-1935}:1935"
-            - "${MEDIA_PORT_HLS:-8888}:8888"
-            - "${MEDIA_PORT_SRT:-8890}:8890"
+  api:
+    platform: linux/amd64
+    build:
+      context: ./api/
+      dockerfile: Dockerfile
+    restart: "unless-stopped"
+    depends_on:
+      - postgis
+      - media
+      - store
+    environment:
+      - CLOUDTAK_Mode=${CLOUDTAK_Mode}
+      - CLOUDTAK_Config_media_url=${CLOUDTAK_Config_media_url}
+      - SigningSecret=${SigningSecret}
+      - ASSET_BUCKET=${ASSET_BUCKET}
+      - AWS_S3_Endpoint=${AWS_S3_Endpoint}
+      - AWS_S3_AccessKeyId=${AWS_S3_AccessKeyId}
+      - AWS_S3_SecretAccessKey=${AWS_S3_SecretAccessKey}
+      - POSTGRES="postgres://${POSTGRES_USER:-api}:${POSTGRES_PASSWORD}@postgis:5432/${POSTGRES_DB:-gis}"
+      - API_URL=${API_URL}
+      - PMTILES_URL=${PMTILES_URL}
+    labels:
+      - "traefik.enable=true"
+      - "traefik.http.routers.backend.rule=Host(`${API_DOMAIN}`)"
+      - "traefik.http.routers.backend.middlewares=crowdsec@docker"
+      - "traefik.http.routers.backend.entrypoints=websecure"
+      - "traefik.http.routers.backend.tls=true"
+      - "traefik.http.routers.backend.tls.certresolver=letsencrypt"
+      - "traefik.http.services.backend.loadbalancer.server.port=5000"
+      - "traefik.http.middlewares.crowdsec.plugin.bouncer.enabled=true"
+      - "traefik.http.middlewares.crowdsec.plugin.bouncer.crowdsecmode=stream"
+      - "traefik.http.middlewares.crowdsec.plugin.bouncer.crowdseclapikey=${BOUNCER_KEY_TRAEFIK}"
+      - "traefik.http.middlewares.crowdsec.plugin.bouncer.crowdsecappsecenabled=true"
 
-    postgis:
-        platform: linux/amd64
-        image: postgis/postgis:17-3.4-alpine
-        restart: 'always'
-        ports:
-            - 5433:5432
-        environment:
-            - POSTGRES_DB=gis
-            - POSTGRES_USER=docker
-            - POSTGRES_PASSWORD=docker
+  tiles:
+    platform: linux/amd64
+    build:
+      context: ./tasks/pmtiles/
+      dockerfile: Dockerfile
+    restart: "unless-stopped"
+    environment:
+      - PMTILES_URL=${PMTILES_URL}
+      - SigningSecret=${SigningSecret}
+      - ASSET_BUCKET=${ASSET_BUCKET}
+      - AWS_S3_Endpoint=${AWS_S3_Endpoint}
+      - AWS_S3_AccessKeyId=${AWS_S3_AccessKeyId}
+      - AWS_S3_SecretAccessKey=${AWS_S3_SecretAccessKey}
+    labels:
+      - "traefik.enable=true"
+      - "traefik.http.routers.backend.rule=Host(`${PMTILES_DOMAIN}`)"
+      - "traefik.http.routers.backend.middlewares=crowdsec@docker"
+      - "traefik.http.routers.backend.entrypoints=websecure"
+      - "traefik.http.routers.backend.tls=true"
+      - "traefik.http.routers.backend.tls.certresolver=letsencrypt"
+      - "traefik.http.services.backend.loadbalancer.server.port=5002"
+      - "traefik.http.middlewares.crowdsec.plugin.bouncer.enabled=true"
+      - "traefik.http.middlewares.crowdsec.plugin.bouncer.crowdsecmode=stream"
+      - "traefik.http.middlewares.crowdsec.plugin.bouncer.crowdseclapikey=${BOUNCER_KEY_TRAEFIK}"
+      - "traefik.http.middlewares.crowdsec.plugin.bouncer.crowdsecappsecenabled=true"
 
-    store:
-        platform: linux/amd64
-        image: minio/minio:RELEASE.2024-08-17T01-24-54Z
-        entrypoint: sh
-        command: -c 'mkdir -p /data/cloudtak && /usr/bin/minio server /data --console-address ":9002"'
-        restart: 'always'
-        volumes:
-            - .docker-store:/data
-        ports:
-            - 9000:9000
-            - 9002:9002
-        environment:
-            - MINIO_ROOT_USER=${MINIO_ROOT_USER}
-            - MINIO_ROOT_PASSWORD=${MINIO_ROOT_PASSWORD}
-            - MINIO_DEFAULT_BUCKETS=${ASSET_BUCKET}
+  events:
+    platform: linux/amd64
+    build:
+      context: ./tasks/events/
+      dockerfile: Dockerfile
+    restart: "unless-stopped"
+    depends_on:
+      - api
+      - store
+    # ports:
+    #     - "5003:5003"
+    environment:
+      - CLOUDTAK_Mode=${CLOUDTAK_Mode}
+      - API_URL=${API_URL}
+      - SigningSecret=${SigningSecret}
+      - ASSET_BUCKET=${ASSET_BUCKET}
+      - AWS_S3_Endpoint=${AWS_S3_Endpoint}
+      - AWS_S3_AccessKeyId=${AWS_S3_AccessKeyId}
+      - AWS_S3_SecretAccessKey=${AWS_S3_SecretAccessKey}
+
+  media:
+    image: ghcr.io/dfpc-coe/media-infra:v8.0.1
+    restart: "unless-stopped"
+    environment:
+      - API_URL=${API_URL}
+      - SigningSecret=${SigningSecret}
+      - CLOUDTAK_Config_media_url=${CLOUDTAK_Config_media_url}
+    ports:
+      - "${MEDIA_PORT_API:-9997}:9997"
+      - "${MEDIA_PORT_RTSP:-8554}:8554"
+      - "${MEDIA_PORT_RTMP:-1935}:1935"
+      - "${MEDIA_PORT_HLS:-8888}:8888"
+      - "${MEDIA_PORT_SRT:-8890}:8890"
+
+  postgis:
+    platform: linux/amd64
+    image: postgis/postgis:17-3.4-alpine
+    restart: "unless-stopped"
+    volumes:
+      - type: volume
+        source: postgis-postgres-vol
+        target: /var/lib/postgresql/data
+        volume:
+          nocopy: false
+    environment:
+      - POSTGRES_DB=${POSTGRES_DB:-gis}
+      - POSTGRES_USER=${POSTGRES_USER:-api}
+      - POSTGRES_PASSWORD=${POSTGRES_PASSWORD}
+
+  store:
+    platform: linux/amd64
+    image: minio/minio:RELEASE.2024-08-17T01-24-54Z
+    # entrypoint: sh
+    # command: -c 'mkdir -p /data/cloudtak && /usr/bin/minio server /data --console-address ":9002"'
+    restart: "unless-stopped"
+    volumes:
+      - type: volume
+        source: minio-data-vol
+        target: /data
+        volume:
+          nocopy: false
+    # ports:
+    #     - 9000:9000
+    #     - 9002:9002
+    environment:
+      - MINIO_ROOT_USER=${MINIO_ROOT_USER}
+      - MINIO_ROOT_PASSWORD=${MINIO_ROOT_PASSWORD}
+      - MINIO_DEFAULT_BUCKETS=${ASSET_BUCKET}
+
+volumes:
+  crowdsec-db-vol:
+  crowdsec-conf-vol:
+  traefik-logs-vol:
+  traefik-acme-vol:
+  postgis-postgres-vol:
+  minio-data-vol:
