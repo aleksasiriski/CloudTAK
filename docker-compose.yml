@@ -26,12 +26,16 @@ services:
         source: ./acquis.yaml
         target: /etc/crowdsec/acquis.yaml
         read_only: true
+    networks:
+      - internal
     restart: unless-stopped
 
   traefik:
     depends_on:
-      - crowdsec
-    image: docker.io/library/traefik:v3.5.3
+      crowdsec:
+        condition: service_started
+        restart: true
+    image: docker.io/library/traefik:v3.6.2
     command:
       - "--accesslog"
       - "--accesslog.filepath=/var/log/traefik/access.log"
@@ -46,11 +50,13 @@ services:
       - "--certificatesresolvers.letsencrypt.acme.storage=acme/acme.json"
       - "--certificatesresolvers.letsencrypt.acme.httpchallenge.entrypoint=web"
       - "--experimental.plugins.bouncer.modulename=github.com/maxlerebourg/crowdsec-bouncer-traefik-plugin"
-      - "--experimental.plugins.bouncer.version=v1.4.5"
+      - "--experimental.plugins.bouncer.version=v1.4.6"
     ports:
       - "80:80/tcp"
       - "443:443/tcp"
       - "443:443/udp"
+    networks:
+      - internal
     volumes:
       - type: volume
         source: traefik-logs-vol
@@ -77,9 +83,17 @@ services:
       dockerfile: Dockerfile
     restart: "unless-stopped"
     depends_on:
-      - postgis
-      - media
-      - store
+      postgis:
+        condition: service_healthy
+        restart: true
+      media:
+        condition: service_started
+        restart: true
+      store:
+        condition: service_started
+        restart: true
+    networks:
+      - internal
     environment:
       - CLOUDTAK_Mode=${CLOUDTAK_Mode}
       - CLOUDTAK_Config_media_url=${CLOUDTAK_Config_media_url}
@@ -88,17 +102,17 @@ services:
       - AWS_S3_Endpoint=${AWS_S3_Endpoint}
       - AWS_S3_AccessKeyId=${AWS_S3_AccessKeyId}
       - AWS_S3_SecretAccessKey=${AWS_S3_SecretAccessKey}
-      - POSTGRES="postgres://${POSTGRES_USER:-api}:${POSTGRES_PASSWORD}@postgis:5432/${POSTGRES_DB:-gis}"
+      - POSTGRES=postgres://${POSTGRES_USER:-gis}:${POSTGRES_PASSWORD}@postgis:5432/${POSTGRES_DB:-gis}
       - API_URL=${API_URL}
       - PMTILES_URL=${PMTILES_URL}
     labels:
       - "traefik.enable=true"
-      - "traefik.http.routers.backend.rule=Host(`${API_DOMAIN}`)"
-      - "traefik.http.routers.backend.middlewares=crowdsec@docker"
-      - "traefik.http.routers.backend.entrypoints=websecure"
-      - "traefik.http.routers.backend.tls=true"
-      - "traefik.http.routers.backend.tls.certresolver=letsencrypt"
-      - "traefik.http.services.backend.loadbalancer.server.port=5000"
+      - "traefik.http.routers.api.rule=Host(`${API_DOMAIN}`)"
+      - "traefik.http.routers.api.middlewares=crowdsec@docker"
+      - "traefik.http.routers.api.entrypoints=websecure"
+      - "traefik.http.routers.api.tls=true"
+      - "traefik.http.routers.api.tls.certresolver=letsencrypt"
+      - "traefik.http.services.api.loadbalancer.server.port=5000"
       - "traefik.http.middlewares.crowdsec.plugin.bouncer.enabled=true"
       - "traefik.http.middlewares.crowdsec.plugin.bouncer.crowdsecmode=stream"
       - "traefik.http.middlewares.crowdsec.plugin.bouncer.crowdseclapikey=${BOUNCER_KEY_TRAEFIK}"
@@ -110,6 +124,8 @@ services:
       context: ./tasks/pmtiles/
       dockerfile: Dockerfile
     restart: "unless-stopped"
+    networks:
+      - internal
     environment:
       - PMTILES_URL=${PMTILES_URL}
       - SigningSecret=${SigningSecret}
@@ -119,12 +135,12 @@ services:
       - AWS_S3_SecretAccessKey=${AWS_S3_SecretAccessKey}
     labels:
       - "traefik.enable=true"
-      - "traefik.http.routers.backend.rule=Host(`${PMTILES_DOMAIN}`)"
-      - "traefik.http.routers.backend.middlewares=crowdsec@docker"
-      - "traefik.http.routers.backend.entrypoints=websecure"
-      - "traefik.http.routers.backend.tls=true"
-      - "traefik.http.routers.backend.tls.certresolver=letsencrypt"
-      - "traefik.http.services.backend.loadbalancer.server.port=5002"
+      - "traefik.http.routers.pmtiles.rule=Host(`${PMTILES_DOMAIN}`)"
+      - "traefik.http.routers.pmtiles.middlewares=crowdsec@docker"
+      - "traefik.http.routers.pmtiles.entrypoints=websecure"
+      - "traefik.http.routers.pmtiles.tls=true"
+      - "traefik.http.routers.pmtiles.tls.certresolver=letsencrypt"
+      - "traefik.http.services.pmtiles.loadbalancer.server.port=5002"
       - "traefik.http.middlewares.crowdsec.plugin.bouncer.enabled=true"
       - "traefik.http.middlewares.crowdsec.plugin.bouncer.crowdsecmode=stream"
       - "traefik.http.middlewares.crowdsec.plugin.bouncer.crowdseclapikey=${BOUNCER_KEY_TRAEFIK}"
@@ -137,10 +153,16 @@ services:
       dockerfile: Dockerfile
     restart: "unless-stopped"
     depends_on:
-      - api
-      - store
+      api:
+        condition: service_started
+        restart: true
+      store:
+        condition: service_started
+        restart: true
     # ports:
     #     - "5003:5003"
+    networks:
+      - internal
     environment:
       - CLOUDTAK_Mode=${CLOUDTAK_Mode}
       - API_URL=${API_URL}
@@ -163,6 +185,8 @@ services:
       - "${MEDIA_PORT_RTMP:-1935}:1935"
       - "${MEDIA_PORT_HLS:-8888}:8888"
       - "${MEDIA_PORT_SRT:-8890}:8890"
+    networks:
+      - internal
 
   postgis:
     platform: linux/amd64
@@ -176,14 +200,26 @@ services:
           nocopy: false
     environment:
       - POSTGRES_DB=${POSTGRES_DB:-gis}
-      - POSTGRES_USER=${POSTGRES_USER:-api}
+      - POSTGRES_USER=${POSTGRES_USER:-gis}
       - POSTGRES_PASSWORD=${POSTGRES_PASSWORD}
+    networks:
+      - internal
+    healthcheck:
+      test:
+        [
+          "CMD-SHELL",
+          "pg_isready -U ${POSTGRES_USER:-gis} -d ${POSTGRES_DB:-gis}",
+        ]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
 
   store:
     platform: linux/amd64
     image: minio/minio:RELEASE.2024-08-17T01-24-54Z
-    # entrypoint: sh
-    # command: -c 'mkdir -p /data/cloudtak && /usr/bin/minio server /data --console-address ":9002"'
+    entrypoint: sh
+    command: -c 'mkdir -p /data/cloudtak && /usr/bin/minio server /data --console-address ":9002"'
     restart: "unless-stopped"
     volumes:
       - type: volume
@@ -194,10 +230,15 @@ services:
     # ports:
     #     - 9000:9000
     #     - 9002:9002
+    networks:
+      - internal
     environment:
       - MINIO_ROOT_USER=${MINIO_ROOT_USER}
       - MINIO_ROOT_PASSWORD=${MINIO_ROOT_PASSWORD}
       - MINIO_DEFAULT_BUCKETS=${ASSET_BUCKET}
+
+networks:
+  internal:
 
 volumes:
   crowdsec-db-vol:
