@@ -15,8 +15,6 @@ services:
       - "--certificatesresolvers.letsencrypt.acme.email=${ACME_EMAIL}"
       - "--certificatesresolvers.letsencrypt.acme.storage=acme/acme.json"
       - "--certificatesresolvers.letsencrypt.acme.httpchallenge.entrypoint=web"
-      - "--experimental.plugins.bouncer.modulename=github.com/maxlerebourg/crowdsec-bouncer-traefik-plugin"
-      - "--experimental.plugins.bouncer.version=v1.4.6"
     ports:
       - "80:80/tcp"
       - "443:443/tcp"
@@ -24,11 +22,6 @@ services:
     networks:
       - internal
     volumes:
-      - type: volume
-        source: traefik-logs-vol
-        target: /var/log/traefik
-        volume:
-          nocopy: false
       - type: volume
         source: traefik-acme-vol
         target: /acme
@@ -191,9 +184,6 @@ networks:
   internal:
 
 volumes:
-  crowdsec-db-vol:
-  crowdsec-conf-vol:
-  traefik-logs-vol:
   traefik-acme-vol:
   postgis-postgres-vol:
   minio-data-vol:
