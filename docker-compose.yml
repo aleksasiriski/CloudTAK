@@ -1,40 +1,6 @@
 services:
   # Reverse proxy
-  crowdsec:
-    image: docker.io/crowdsecurity/crowdsec:v1.6.11
-    environment:
-      COLLECTIONS: "crowdsecurity/traefik crowdsecurity/appsec-virtual-patching crowdsecurity/appsec-generic-rules"
-      CUSTOM_HOSTNAME: "crowdsec"
-      BOUNCER_KEY_TRAEFIK: ${BOUNCER_KEY_TRAEFIK}
-    volumes:
-      - type: volume
-        source: traefik-logs-vol
-        target: /var/log/traefik
-        volume:
-          nocopy: false
-      - type: volume
-        source: crowdsec-db-vol
-        target: /var/lib/crowdsec/data
-        volume:
-          nocopy: false
-      - type: volume
-        source: crowdsec-conf-vol
-        target: /etc/crowdsec
-        volume:
-          nocopy: false
-      - type: bind
-        source: ./acquis.yaml
-        target: /etc/crowdsec/acquis.yaml
-        read_only: true
-    networks:
-      - internal
-    restart: unless-stopped
-
   traefik:
-    depends_on:
-      crowdsec:
-        condition: service_started
-        restart: true
     image: docker.io/library/traefik:v3.6.2
     command:
       - "--accesslog"
@@ -75,7 +41,6 @@ services:
     restart: unless-stopped
 
   # CloudTAK
-
   api:
     platform: linux/amd64
     build:
@@ -108,15 +73,10 @@ services:
     labels:
       - "traefik.enable=true"
       - "traefik.http.routers.api.rule=Host(`${API_DOMAIN}`)"
-      - "traefik.http.routers.api.middlewares=crowdsec@docker"
       - "traefik.http.routers.api.entrypoints=websecure"
       - "traefik.http.routers.api.tls=true"
       - "traefik.http.routers.api.tls.certresolver=letsencrypt"
       - "traefik.http.services.api.loadbalancer.server.port=5000"
-      - "traefik.http.middlewares.crowdsec.plugin.bouncer.enabled=true"
-      - "traefik.http.middlewares.crowdsec.plugin.bouncer.crowdsecmode=stream"
-      - "traefik.http.middlewares.crowdsec.plugin.bouncer.crowdseclapikey=${BOUNCER_KEY_TRAEFIK}"
-      - "traefik.http.middlewares.crowdsec.plugin.bouncer.crowdsecappsecenabled=true"
 
   tiles:
     platform: linux/amd64
@@ -136,15 +96,10 @@ services:
     labels:
       - "traefik.enable=true"
       - "traefik.http.routers.pmtiles.rule=Host(`${PMTILES_DOMAIN}`)"
-      - "traefik.http.routers.pmtiles.middlewares=crowdsec@docker"
       - "traefik.http.routers.pmtiles.entrypoints=websecure"
       - "traefik.http.routers.pmtiles.tls=true"
       - "traefik.http.routers.pmtiles.tls.certresolver=letsencrypt"
       - "traefik.http.services.pmtiles.loadbalancer.server.port=5002"
-      - "traefik.http.middlewares.crowdsec.plugin.bouncer.enabled=true"
-      - "traefik.http.middlewares.crowdsec.plugin.bouncer.crowdsecmode=stream"
-      - "traefik.http.middlewares.crowdsec.plugin.bouncer.crowdseclapikey=${BOUNCER_KEY_TRAEFIK}"
-      - "traefik.http.middlewares.crowdsec.plugin.bouncer.crowdsecappsecenabled=true"
 
   events:
     platform: linux/amd64
@@ -159,8 +114,6 @@ services:
       store:
         condition: service_started
         restart: true
-    # ports:
-    #     - "5003:5003"
     networks:
       - internal
     environment:
@@ -227,9 +180,6 @@ services:
         target: /data
         volume:
           nocopy: false
-    # ports:
-    #     - 9000:9000
-    #     - 9002:9002
     networks:
       - internal
     environment:
